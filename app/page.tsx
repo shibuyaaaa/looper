@@ -2,12 +2,26 @@
 
 import { useState, useRef, useEffect } from "react"
 import { Card, CardContent } from "@/components/ui/card"
-import { Music } from "lucide-react"
+import { Music, Info } from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
 import SamplePad from "@/components/sample-pad"
 import Visualizer from "@/components/visualizer"
 import LoopRecorder from "@/components/loop-recorder"
 import { useToast } from "@/hooks/use-toast"
 import SampleSettings from "@/components/sample-settings"
+
+// Define default samples
+const DEFAULT_SAMPLES = [
+  { name: "Kick", file: "kick.wav" },
+  { name: "Snare", file: "snare.wav" },
+  { name: "HiHat", file: "hihat.wav" },
+  { name: "Clap", file: "clap.wav" },
+  { name: "Bdim_chord", file: "Bdim_chord.wav" },
+  { name: "C_chord", file: "C_chord.wav" },
+  { name: "Em_chord", file: "Em_chord.wav" },
+  { name: "G_chord", file: "G_chord.wav" },
+]
 
 // Define chord frequencies (in Hz) for A minor scale
 const CHORDS = {
@@ -29,9 +43,18 @@ interface Sample {
   isCuttingOff: boolean
   sourceNode: AudioBufferSourceNode | null
   gainNode: GainNode | null
-  progress: number
   isSynth?: boolean
   chordFrequencies?: number[]
+  defaultSampleFile?: string
+}
+
+// Define the loop interface
+interface SavedLoop {
+  id: string
+  name: string
+  events: { sampleId: string; time: number }[]
+  duration: number
+  createdAt: Date
 }
 
 // Available colors for sample pads
@@ -65,11 +88,12 @@ export default function SamplePadApp() {
   const [recordedSequence, setRecordedSequence] = useState<{ sampleId: string; time: number }[]>([])
   const [recordStartTime, setRecordStartTime] = useState(0)
   const [activeVisualizers, setActiveVisualizers] = useState<{ id: string; color: string; intensity: number }[]>([])
+  const [savedLoops, setSavedLoops] = useState<SavedLoop[]>([])
+  const [currentlyPlayingLoop, setCurrentlyPlayingLoop] = useState<string | null>(null)
 
   const audioContext = useRef<AudioContext | null>(null)
   const analyserNode = useRef<AnalyserNode | null>(null)
   const loopInterval = useRef<NodeJS.Timeout | null>(null)
-  const progressInterval = useRef<NodeJS.Timeout | null>(null)
   const visualizerTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const { toast } = useToast()
 
@@ -86,13 +110,22 @@ export default function SamplePadApp() {
 
     // Initialize with empty sample pads
     const initialSamples: Sample[] = defaultKeys.map((key, index) => {
-      // Check if this is one of the bottom four pads
-      const isBottomPad = index >= 12 // z, x, c, v
+      // Check if this is one of the bottom eight pads (for default samples)
+      const isDefaultSample = index >= 8
+      const defaultSampleIndex = index - 8
+      const defaultSample = isDefaultSample ? DEFAULT_SAMPLES[defaultSampleIndex] : null
+
+      // Check if this is one of the bottom four pads (for chords)
+      const isBottomPad = index >= 12
       const chordType = isBottomPad ? Object.keys(CHORDS)[index - 12] : null
 
       return {
         id: `sample-${index}`,
-        name: isBottomPad ? `Chord ${chordType}` : `Empty Pad ${index + 1}`,
+        name: isBottomPad 
+          ? `Chord ${chordType}` 
+          : isDefaultSample 
+            ? defaultSample!.name 
+            : `Empty Pad ${index + 1}`,
         buffer: null,
         key: key,
         color: padColors[index % padColors.length],
@@ -101,13 +134,38 @@ export default function SamplePadApp() {
         isCuttingOff: false,
         sourceNode: null,
         gainNode: null,
-        progress: 0,
         isSynth: isBottomPad,
         chordFrequencies: isBottomPad ? CHORDS[chordType as keyof typeof CHORDS] : undefined,
+        defaultSampleFile: isDefaultSample ? defaultSample!.file : undefined,
       }
     })
 
     setSamples(initialSamples)
+
+    // Load default samples
+    const loadDefaultSamples = async () => {
+      for (let i = 0; i < initialSamples.length; i++) {
+        const sample = initialSamples[i]
+        if (sample.defaultSampleFile) {
+          try {
+            const response = await fetch(`/samples/${sample.defaultSampleFile}`)
+            const arrayBuffer = await response.arrayBuffer()
+            if (audioContext.current) {
+              const audioBuffer = await audioContext.current.decodeAudioData(arrayBuffer)
+              setSamples(prev => prev.map(s => 
+                s.id === sample.id 
+                  ? { ...s, buffer: audioBuffer } 
+                  : s
+              ))
+            }
+          } catch (error) {
+            console.error(`Error loading default sample ${sample.defaultSampleFile}:`, error)
+          }
+        }
+      }
+    }
+
+    loadDefaultSamples()
 
     return () => {
       if (audioContext.current) {
@@ -116,85 +174,8 @@ export default function SamplePadApp() {
       if (loopInterval.current) {
         clearInterval(loopInterval.current)
       }
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current)
-      }
     }
   }, [])
-
-  // Update progress for playing samples
-  useEffect(() => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current)
-    }
-
-    const playingSamples = samples.filter(s => s.sourceNode && s.buffer)
-    if (playingSamples.length === 0) return
-
-    progressInterval.current = setInterval(() => {
-      setSamples(prev => prev.map(sample => {
-        if (sample.sourceNode && sample.buffer) {
-          const currentTime = audioContext.current?.currentTime || 0
-          const startTime = (sample.sourceNode as any)._startTime || 0
-          const duration = sample.buffer.duration
-          let progress = (currentTime - startTime) / duration
-
-          if (sample.isLooping) {
-            progress = progress % 1
-          } else if (progress >= 1) {
-            progress = 1
-          }
-
-          return { ...sample, progress }
-        }
-        return sample
-      }))
-    }, 50) // Update every 50ms
-
-    return () => {
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current)
-      }
-    }
-  }, [samples])
-
-  // Handle keyboard events to trigger samples
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if modifier keys are pressed or if typing in an input
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return
-      }
-
-      // Handle Ctrl/Cmd + key for selection
-      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
-        const key = e.key.toLowerCase()
-        const sample = samples.find((s) => s.key.toLowerCase() === key)
-        if (sample) {
-          setSelectedSample(sample.id)
-          return
-        }
-      }
-
-      // Handle regular key presses for sample triggering
-      if (e.ctrlKey || e.altKey || e.metaKey) {
-        return
-      }
-
-      const key = e.key.toLowerCase()
-      const sample = samples.find((s) => s.key.toLowerCase() === key)
-
-      if (sample && sample.buffer) {
-        playSample(sample.id)
-        e.preventDefault()
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown)
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown)
-    }
-  }, [samples])
 
   // Load a sample file
   const loadSample = async (file: File, sampleId: string) => {
@@ -311,8 +292,7 @@ export default function SamplePadApp() {
       // Update sample with synth nodes
       updateSampleSettings(sampleId, { 
         sourceNode: synthNodes[0].oscillator as any, 
-        gainNode: synthNodes[0].gainNode,
-        progress: 0 
+        gainNode: synthNodes[0].gainNode
       })
 
       // Clean up nodes after they finish
@@ -336,9 +316,8 @@ export default function SamplePadApp() {
       gainNode.connect(analyserNode.current!)
 
       source.start(0)
-      ;(source as any)._startTime = audioContext.current.currentTime
 
-      updateSampleSettings(sampleId, { sourceNode: source, gainNode: gainNode, progress: 0 })
+      updateSampleSettings(sampleId, { sourceNode: source, gainNode: gainNode })
     }
 
     // Record the sample trigger if recording
@@ -397,30 +376,36 @@ export default function SamplePadApp() {
       return
     }
 
+    // Save the recorded sequence as a new loop
+    const lastEvent = recordedSequence[recordedSequence.length - 1]
+    const loopDuration = lastEvent.time + 1000 // Add 1 second buffer
+
+    const newLoop: SavedLoop = {
+      id: `loop-${Date.now()}`,
+      name: `Loop ${savedLoops.length + 1}`,
+      events: recordedSequence,
+      duration: loopDuration,
+      createdAt: new Date()
+    }
+
+    setSavedLoops(prev => [...prev, newLoop])
+
     toast({
       title: "Recording finished",
       description: `Recorded ${recordedSequence.length} sample triggers.`,
     })
   }
 
-  // Play the recorded loop
-  const playLoop = () => {
-    if (recordedSequence.length === 0) {
-      toast({
-        title: "Nothing to play",
-        description: "Record a sequence first.",
-      })
-      return
-    }
+  // Play a specific loop
+  const playLoop = (loopId: string) => {
+    const loop = savedLoops.find(l => l.id === loopId)
+    if (!loop) return
 
     setIsPlaying(true)
-
-    // Get the total duration of the sequence
-    const lastEvent = recordedSequence[recordedSequence.length - 1]
-    const loopDuration = lastEvent.time + 1000 // Add 1 second buffer
+    setCurrentlyPlayingLoop(loopId)
 
     // Schedule all sample triggers
-    recordedSequence.forEach((event) => {
+    loop.events.forEach((event) => {
       setTimeout(() => {
         playSample(event.sampleId)
       }, event.time)
@@ -429,21 +414,43 @@ export default function SamplePadApp() {
     // Schedule the end of playback
     setTimeout(() => {
       setIsPlaying(false)
-    }, loopDuration)
+      setCurrentlyPlayingLoop(null)
+    }, loop.duration)
   }
 
   // Stop loop playback
   const stopLoop = () => {
-    setIsPlaying(false)
+    if (currentlyPlayingLoop) {
+      const loop = savedLoops.find((l) => l.id === currentlyPlayingLoop)
+      if (loop) {
+        // Stop all samples that were triggered by this loop
+        loop.events.forEach((event) => {
+          const sample = samples.find((s) => s.id === event.sampleId)
+          if (sample?.sourceNode) {
+            sample.sourceNode.stop()
+            sample.sourceNode = null
+          }
+        })
+      }
+      setCurrentlyPlayingLoop(null)
+      setIsPlaying(false)
+    }
   }
 
-  // Clear the recorded sequence
-  const clearRecording = () => {
-    setRecordedSequence([])
+  // Clear a specific loop
+  const clearLoop = (loopId: string) => {
+    setSavedLoops(prev => prev.filter(loop => loop.id !== loopId))
     toast({
-      title: "Recording cleared",
-      description: "The recorded sequence has been cleared.",
+      title: "Loop deleted",
+      description: "The loop has been deleted.",
     })
+  }
+
+  // Rename a loop
+  const renameLoop = (loopId: string, newName: string) => {
+    setSavedLoops(prev => prev.map(loop => 
+      loop.id === loopId ? { ...loop, name: newName } : loop
+    ))
   }
 
   // Clean up timeouts on unmount
@@ -455,10 +462,97 @@ export default function SamplePadApp() {
     }
   }, [])
 
+  // Handle keyboard events to trigger samples
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if modifier keys are pressed or if typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return
+      }
+
+      // Handle Ctrl/Cmd + key for selection
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const key = e.key.toLowerCase()
+        const sample = samples.find((s) => s.key.toLowerCase() === key)
+        if (sample) {
+          setSelectedSample(sample.id)
+          return
+        }
+      }
+
+      // Handle regular key presses for sample triggering
+      if (e.ctrlKey || e.altKey || e.metaKey) {
+        return
+      }
+
+      const key = e.key.toLowerCase()
+      const sample = samples.find((s) => s.key.toLowerCase() === key)
+
+      if (sample && (sample.buffer || sample.isSynth)) {
+        playSample(sample.id)
+        e.preventDefault()
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [samples])
+
   return (
     <div className="flex flex-col min-h-screen bg-zinc-900 text-white">
-      <header className="border-b border-zinc-800 p-4">
-        <h1 className="text-2xl font-bold">Sample Pad Studio</h1>
+      <header className="border-b border-zinc-800 p-4 flex justify-between items-center">
+        <h1 className="text-2xl font-bold">Looper</h1>
+        <div className="flex gap-2">
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button variant="ghost" size="icon" className="text-white hover:text-white/80">
+                <Info className="h-5 w-5" />
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="bg-zinc-800 border-zinc-700 text-white">
+              <DialogHeader>
+                <DialogTitle>How to Use Looper</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 text-sm">
+                <div>
+                  <h3 className="font-semibold mb-2">Sample Pads</h3>
+                  <ul className="list-disc pl-4 space-y-1">
+                    <li>Click on any pad to play the sample</li>
+                    <li>Use keyboard shortcuts (1-4, q-r, a-f, z-v) to trigger samples</li>
+                    <li>Drag and drop audio files to load custom samples</li>
+                    <li>Bottom row contains chord pads (A minor scale)</li>
+                  </ul>
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-2">Sample Settings</h3>
+                  <ul className="list-disc pl-4 space-y-1">
+                    <li>Adjust volume using the slider</li>
+                    <li>Toggle looping for continuous playback</li>
+                    <li>Enable cut-off to stop previous playback</li>
+                  </ul>
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-2">Loop Recording</h3>
+                  <ul className="list-disc pl-4 space-y-1">
+                    <li>Click "Start Recording" to begin capturing your sequence</li>
+                    <li>Play samples to create your loop</li>
+                    <li>Click "Stop Recording" to save your loop</li>
+                    <li>Use the loop controls to play, stop, or delete saved loops</li>
+                  </ul>
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-2">Visualizer</h3>
+                  <ul className="list-disc pl-4 space-y-1">
+                    <li>Watch real-time audio visualization</li>
+                    <li>Each pad has its own color in the visualizer</li>
+                  </ul>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
       </header>
 
       <main className="flex-1 p-4 overflow-hidden">
@@ -477,28 +571,11 @@ export default function SamplePadApp() {
                       isActive={activeVisualizers.some(v => v.id === sample.id)}
                       isSelected={selectedSample === sample.id}
                       onSelect={() => setSelectedSample(sample.id)}
-                      progress={sample.progress}
                     />
                   ))}
                 </div>
               </CardContent>
             </Card>
-
-            {/* Sample Settings */}
-            {selectedSample && (
-              <SampleSettings
-                sample={samples.find((s) => s.id === selectedSample)!}
-                volume={samples.find((s) => s.id === selectedSample)!.volume}
-                onVolumeChange={(value) => updateSampleSettings(selectedSample, { volume: value })}
-                isLooping={samples.find((s) => s.id === selectedSample)!.isLooping}
-                onLoopingChange={(value) => updateSampleSettings(selectedSample, { isLooping: value })}
-                isCuttingOff={samples.find((s) => s.id === selectedSample)!.isCuttingOff}
-                onCuttingOffChange={(value) => updateSampleSettings(selectedSample, { isCuttingOff: value })}
-                onPlay={() => playSample(selectedSample)}
-                onStop={() => stopSample(selectedSample)}
-                progress={samples.find((s) => s.id === selectedSample)!.progress}
-              />
-            )}
           </div>
 
           {/* Visualizer Section */}
@@ -520,21 +597,57 @@ export default function SamplePadApp() {
           </div>
         </div>
 
-        {/* Loop Recorder Section */}
-        <Card className="bg-zinc-800 border-zinc-700 mt-6">
-          <CardContent className="p-4">
-            <LoopRecorder
-              isRecording={isRecording}
-              isPlaying={isPlaying}
-              onStartRecording={startRecording}
-              onStopRecording={stopRecording}
-              onPlayLoop={playLoop}
-              onStopLoop={stopLoop}
-              onClearRecording={clearRecording}
-              recordedEvents={recordedSequence.length}
-            />
-          </CardContent>
-        </Card>
+        {/* Settings and Loop Recorder Section */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+          {/* Sample Settings */}
+          <Card className="bg-zinc-800 border-zinc-700">
+            <CardContent className="p-3">
+              <h2 className="text-lg font-semibold mb-2">Sample Settings</h2>
+              <div className="scale-90 origin-top-left">
+                <SampleSettings
+                  sample={samples.find((s) => s.id === selectedSample) || samples[0] || {
+                    id: 'default',
+                    name: 'No Sample Selected',
+                    buffer: null,
+                    key: '',
+                    color: 'bg-zinc-600',
+                    volume: 1.0,
+                    isLooping: false,
+                    isCuttingOff: false,
+                    sourceNode: null,
+                    gainNode: null
+                  }}
+                  volume={samples.find((s) => s.id === selectedSample)?.volume ?? 1.0}
+                  onVolumeChange={(value) => selectedSample && updateSampleSettings(selectedSample, { volume: value })}
+                  isLooping={samples.find((s) => s.id === selectedSample)?.isLooping ?? false}
+                  onLoopingChange={(value) => selectedSample && updateSampleSettings(selectedSample, { isLooping: value })}
+                  isCuttingOff={samples.find((s) => s.id === selectedSample)?.isCuttingOff ?? false}
+                  onCuttingOffChange={(value) => selectedSample && updateSampleSettings(selectedSample, { isCuttingOff: value })}
+                  onPlay={() => selectedSample && playSample(selectedSample)}
+                  onStop={() => selectedSample && stopSample(selectedSample)}
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Loop Recorder */}
+          <Card className="bg-zinc-800 border-zinc-700">
+            <CardContent className="p-4">
+              <LoopRecorder
+                isRecording={isRecording}
+                isPlaying={isPlaying}
+                onStartRecording={startRecording}
+                onStopRecording={stopRecording}
+                onPlayLoop={playLoop}
+                onStopLoop={stopLoop}
+                onClearLoop={clearLoop}
+                onRenameLoop={renameLoop}
+                savedLoops={savedLoops}
+                currentlyPlayingLoop={currentlyPlayingLoop}
+              />
+            </CardContent>
+          </Card>
+        </div>
       </main>
     </div>
   )

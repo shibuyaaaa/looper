@@ -19,10 +19,9 @@ interface SamplePadProps {
   isActive: boolean
   isSelected: boolean
   onSelect: () => void
-  progress?: number // 0 to 1
 }
 
-export default function SamplePad({ sample, onPlay, onLoad, isActive, isSelected, onSelect, progress = 0 }: SamplePadProps) {
+export default function SamplePad({ sample, onPlay, onLoad, isActive, isSelected, onSelect }: SamplePadProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -51,16 +50,6 @@ export default function SamplePad({ sample, onPlay, onLoad, isActive, isSelected
         isSelected && "ring-2 ring-white ring-offset-2 ring-offset-zinc-800"
       )}
     >
-      {/* Progress Border */}
-      {sample.buffer && (
-        <div
-          className="absolute inset-0 border-4 border-white/50 shadow-[0_0_10px_rgba(255,255,255,0.3)]"
-          style={{
-            clipPath: `polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 ${100 - progress * 100}%)`,
-            transition: "clip-path 0.05s linear",
-          }}
-        />
-      )}
       <div
         className="aspect-square flex flex-col items-center justify-center p-2 cursor-pointer"
         onClick={handleClick}

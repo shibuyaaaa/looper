@@ -249,6 +249,41 @@ export default function SamplePadApp() {
     )
   }
 
+  // Remove a sample
+  const removeSample = (sampleId: string) => {
+    // Stop the sample if it's playing
+    stopSample(sampleId)
+    
+    // Reset the sample to its initial state
+    setSamples((prev) =>
+      prev.map((sample) => {
+        if (sample.id === sampleId) {
+          return {
+            ...sample,
+            buffer: null,
+            name: `Empty Pad ${sample.id.split('-')[1]}`,
+            volume: 1.0,
+            isLooping: false,
+            isCuttingOff: false,
+            sourceNode: null,
+            gainNode: null,
+          }
+        }
+        return sample
+      })
+    )
+
+    // If the removed sample was selected, clear the selection
+    if (selectedSample === sampleId) {
+      setSelectedSample(null)
+    }
+
+    toast({
+      title: "Sample removed",
+      description: "The sample has been removed and the pad is ready for a new sample.",
+    })
+  }
+
   // Play a sample by its ID
   const playSample = (sampleId: string) => {
     if (!audioContext.current) return
@@ -568,6 +603,7 @@ export default function SamplePadApp() {
                       sample={sample}
                       onPlay={() => playSample(sample.id)}
                       onLoad={(file) => loadSample(file, sample.id)}
+                      onRemove={() => removeSample(sample.id)}
                       isActive={activeVisualizers.some(v => v.id === sample.id)}
                       isSelected={selectedSample === sample.id}
                       onSelect={() => setSelectedSample(sample.id)}

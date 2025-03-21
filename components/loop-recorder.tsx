@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Mic, Square, Play, Pause, Trash2, Pencil } from "lucide-react"
+import { Square, Play, Pause, Trash2, Pencil } from "lucide-react"
 import { useState, useEffect, useRef } from "react"
 import { Slider } from "@/components/ui/slider"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -110,12 +110,16 @@ export default function LoopRecorder({
         {/* Recording Controls and Progress Bar */}
         <div className="flex items-center gap-4">
           <Button
-            variant={isRecording ? "destructive" : "ghost"}
+            variant="ghost"
             size="icon"
             onClick={isRecording ? onStopRecording : onStartRecording}
             className={`h-12 w-12 ${isRecording ? 'bg-red-500/20 hover:bg-red-500/30' : 'hover:bg-zinc-700'}`}
           >
-            <Mic className={`h-6 w-6 ${isRecording ? 'text-red-500' : 'text-zinc-400'}`} />
+            {isRecording ? (
+              <Square className="h-6 w-6 text-red-500" />
+            ) : (
+              <div className="h-4 w-4 rounded-full bg-red-500" />
+            )}
           </Button>
           <div className="flex-1">
             <Slider
@@ -159,7 +163,7 @@ export default function LoopRecorder({
                 key={loop.id}
                 className={`flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors ${
                   loop.id === currentlyPlayingLoop 
-                    ? 'bg-red-950/50 border border-red-900/50' 
+                    ? 'bg-zinc-700/50 border border-zinc-600/50' 
                     : loop.id === selectedLoop 
                       ? 'bg-zinc-700 border border-zinc-600' 
                       : 'bg-zinc-900/30 border border-zinc-800/50 hover:bg-zinc-800/30 hover:border-zinc-700/50'
@@ -179,7 +183,7 @@ export default function LoopRecorder({
                       onClick={(e) => e.stopPropagation()}
                     />
                   ) : (
-                    <span className={`text-sm ${loop.id === currentlyPlayingLoop ? 'text-red-200' : 'text-zinc-400'}`}>
+                    <span className={`text-sm ${loop.id === currentlyPlayingLoop ? 'text-zinc-200' : 'text-zinc-400'}`}>
                       {loop.name}
                     </span>
                   )}

@@ -18,12 +18,14 @@ interface SavedLoop {
 interface LoopRecorderProps {
   isRecording: boolean
   isPlaying: boolean
+  isLooping: boolean
   onStartRecording: () => void
   onStopRecording: () => void
   onPlayLoop: (loopId: string) => void
   onStopLoop: () => void
   onClearLoop: (loopId: string) => void
   onRenameLoop: (loopId: string, newName: string) => void
+  onToggleLoop: () => void
   savedLoops: SavedLoop[]
   currentlyPlayingLoop: string | null
 }
@@ -31,12 +33,14 @@ interface LoopRecorderProps {
 export default function LoopRecorder({
   isRecording,
   isPlaying,
+  isLooping,
   onStartRecording,
   onStopRecording,
   onPlayLoop,
   onStopLoop,
   onClearLoop,
   onRenameLoop,
+  onToggleLoop,
   savedLoops,
   currentlyPlayingLoop,
 }: LoopRecorderProps) {
@@ -151,6 +155,31 @@ export default function LoopRecorder({
             className="h-12 w-12"
           >
             <Square className="h-6 w-6" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onToggleLoop}
+            disabled={!selectedLoop}
+            className={`h-12 w-12 ${isLooping ? 'bg-blue-500/20 hover:bg-blue-500/30' : 'hover:bg-zinc-700'}`}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={`h-6 w-6 ${isLooping ? 'text-blue-500' : 'text-zinc-400'}`}
+            >
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+              <path d="M3 12a9 9 0 1 0 6.219 8.56" />
+              <path d="M3 12h18" />
+              <path d="M12 3v18" />
+            </svg>
           </Button>
         </div>
 

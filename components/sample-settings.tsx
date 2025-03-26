@@ -16,8 +16,8 @@ interface SampleSettingsProps {
   onVolumeChange: (value: number) => void
   isLooping: boolean
   onLoopingChange: (value: boolean) => void
-  isCuttingOff: boolean
-  onCuttingOffChange: (value: boolean) => void
+  isPolyphonic: boolean
+  onPolyphonicChange: (value: boolean) => void
   onPlay: () => void
   onStop: () => void
 }
@@ -28,8 +28,8 @@ export default function SampleSettings({
   onVolumeChange,
   isLooping,
   onLoopingChange,
-  isCuttingOff,
-  onCuttingOffChange,
+  isPolyphonic,
+  onPolyphonicChange,
   onPlay,
   onStop,
 }: SampleSettingsProps) {
@@ -88,11 +88,16 @@ export default function SampleSettings({
             />
           </div>
           <div className="flex items-center justify-between">
-            <Label>Cut Off Previous</Label>
+            <Label>Polyphonic Mode</Label>
             <Switch
-              checked={isCuttingOff}
-              onCheckedChange={onCuttingOffChange}
+              checked={isPolyphonic}
+              onCheckedChange={onPolyphonicChange}
             />
+          </div>
+          <div className="text-xs text-zinc-400">
+            {isPolyphonic 
+              ? "Multiple notes can play simultaneously" 
+              : "New notes will cut off previous ones"}
           </div>
         </div>
       </CardContent>

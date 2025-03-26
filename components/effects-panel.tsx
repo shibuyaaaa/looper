@@ -6,17 +6,32 @@ import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Knob } from "@/components/ui/knob"
 
-export default function EffectsPanel() {
-  const [reverbAmount, setReverbAmount] = useState(20)
-  const [delayAmount, setDelayAmount] = useState(0)
-  const [pitchShift, setPitchShift] = useState(0)
-  const [speed, setSpeed] = useState(100)
+interface EffectsPanelProps {
+  reverbAmount: number
+  delayAmount: number
+  pitchShift: number
+  speed: number
+  onReverbChange: (value: number) => void
+  onDelayChange: (value: number) => void
+  onPitchChange: (value: number) => void
+  onSpeedChange: (value: number) => void
+}
 
+export default function EffectsPanel({
+  reverbAmount,
+  delayAmount,
+  pitchShift,
+  speed,
+  onReverbChange,
+  onDelayChange,
+  onPitchChange,
+  onSpeedChange,
+}: EffectsPanelProps) {
   return (
     <div className="border-t border-zinc-800 bg-zinc-900 p-4">
       <Card className="bg-zinc-800 border-zinc-700">
         <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Effects</CardTitle>
+          <CardTitle className="text-lg">Effects (in dev)</CardTitle>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="reverb">
@@ -34,7 +49,7 @@ export default function EffectsPanel() {
                     value={reverbAmount}
                     min={0}
                     max={100}
-                    onChange={setReverbAmount}
+                    onChange={onReverbChange}
                     size={80}
                     color="#4ade80"
                     label="Amount"
@@ -61,7 +76,7 @@ export default function EffectsPanel() {
                     value={delayAmount}
                     min={0}
                     max={100}
-                    onChange={setDelayAmount}
+                    onChange={onDelayChange}
                     size={80}
                     color="#60a5fa"
                     label="Amount"
@@ -94,7 +109,7 @@ export default function EffectsPanel() {
                     min={-12}
                     max={12}
                     step={1}
-                    onValueChange={(value) => setPitchShift(value[0])}
+                    onValueChange={(value) => onPitchChange(value[0])}
                   />
                 </div>
                 <div className="text-center">
@@ -112,7 +127,7 @@ export default function EffectsPanel() {
                     <span className="text-sm">100%</span>
                     <span className="text-sm">200%</span>
                   </div>
-                  <Slider value={[speed]} min={50} max={200} step={1} onValueChange={(value) => setSpeed(value[0])} />
+                  <Slider value={[speed]} min={50} max={200} step={1} onValueChange={(value) => onSpeedChange(value[0])} />
                 </div>
                 <div className="text-center">
                   <div className="text-lg font-bold">{speed}%</div>

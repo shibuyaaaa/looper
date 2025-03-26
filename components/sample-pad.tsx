@@ -13,6 +13,7 @@ interface SamplePadProps {
     buffer: AudioBuffer | null
     key: string
     color: string
+    isSynth: boolean
   }
   onPlay: () => void
   onLoad: (file: File) => void
@@ -64,18 +65,20 @@ export default function SamplePad({ sample, onPlay, onLoad, onRemove, isActive, 
           {sample.key.toUpperCase()}
         </div>
 
-        {sample.buffer ? (
+        {(sample.buffer || sample.isSynth) ? (
           <>
             <Play className="h-8 w-8 mb-2" />
             <div className="text-xs text-center truncate w-full">{sample.name}</div>
-            <button
-              onClick={handleRemove}
-              className="absolute bottom-2 right-2 p-1 rounded-full bg-black/30 hover:bg-black/50 transition-all duration-200 opacity-0 group-hover:opacity-100"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-              </svg>
-            </button>
+            {!sample.isSynth && (
+              <button
+                onClick={handleRemove}
+                className="absolute bottom-2 right-2 p-1 rounded-full bg-black/30 hover:bg-black/50 transition-all duration-200 opacity-0 group-hover:opacity-100"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            )}
             <div className="absolute bottom-2 left-2 text-[10px] text-white/60 opacity-0 group-hover:opacity-100 transition-all duration-200">
               Ctrl/⌘ + Click
             </div>

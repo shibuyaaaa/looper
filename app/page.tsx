@@ -10,6 +10,7 @@ import Visualizer from "@/components/visualizer"
 import LoopRecorder from "@/components/loop-recorder"
 import { useToast } from "@/hooks/use-toast"
 import SampleSettings from "@/components/sample-settings"
+import EffectsPanel from "@/components/effects-panel"
 
 // Define default samples
 const DEFAULT_SAMPLES = [
@@ -17,36 +18,47 @@ const DEFAULT_SAMPLES = [
   { name: "Snare", file: "snare.wav" },
   { name: "HiHat", file: "hihat.wav" },
   { name: "Clap", file: "clap.wav" },
-  { name: "Bdim_chord", file: "Bdim_chord.wav" },
-  { name: "C_chord", file: "C_chord.wav" },
-  { name: "Em_chord", file: "Em_chord.wav" },
-  { name: "G_chord", file: "G_chord.wav" },
+  { name: "Bdim", file: "Bdim_chord.wav" },
+  { name: "C", file: "C_chord.wav" },
+  { name: "Em", file: "Em_chord.wav" },
+  { name: "G", file: "G_chord.wav" },
 ]
 
 // Define chord frequencies (in Hz) for A minor scale
-const CHORDS = {
-  I: [220.00, 261.63, 329.63],    // A minor (A, C, E)
-  II: [246.94, 293.66, 369.99],   // B diminished (B, D, F)
-  IV: [293.66, 349.23, 440.00],   // D minor (D, F, A)
-  V: [329.63, 392.00, 493.88],    // E minor (E, G, B)
+const ARPEGGIOS = {
+  Bdim: [246.94, 293.66, 369.99, 493.88, 587.33, 739.99],    // B, D, F, B, D, F (2 octaves)
+  C: [261.63, 329.63, 392.00, 523.25, 659.25, 783.99],       // C, E, G, C, E, G (2 octaves)
+  Em: [329.63, 392.00, 493.88, 659.25, 783.99, 987.77],      // E, G, B, E, G, B (2 octaves)
+  G: [392.00, 493.88, 587.33, 783.99, 987.77, 1174.66],      // G, B, D, G, B, D (2 octaves)
 }
 
-// Define the sample interface
-interface Sample {
+// Base interface for any sound source
+interface SoundSource {
   id: string
   name: string
-  buffer: AudioBuffer | null
   key: string
   color: string
   volume: number
-  isLooping: boolean
-  isCuttingOff: boolean
-  sourceNode: AudioBufferSourceNode | null
+  isPolyphonic: boolean
+  sourceNode: AudioBufferSourceNode | OscillatorNode | null
   gainNode: GainNode | null
-  isSynth?: boolean
-  chordFrequencies?: number[]
+  isLooping: boolean
+}
+
+interface AudioSample extends SoundSource {
+  type: 'sample'
+  buffer: AudioBuffer | null
   defaultSampleFile?: string
 }
+
+interface SynthPad extends SoundSource {
+  type: 'synth'
+  frequencies: number[]
+  waveform: OscillatorType
+  arpeggioPattern?: number[]
+}
+
+type Pad = AudioSample | SynthPad
 
 // Define the loop interface
 interface SavedLoop {
@@ -80,16 +92,64 @@ const padColors = [
 // Default key mapping (4x4 grid)
 const defaultKeys = ["1", "2", "3", "4", "q", "w", "e", "r", "a", "s", "d", "f", "z", "x", "c", "v"]
 
+// Update the visualizer state interface
+interface VisualizerState {
+  id: string
+  color: string
+  intensity: number
+  frequencyBand?: 'bass' | 'mid' | 'high'  // Add frequency band tracking
+}
+
+// Update the SamplePad component props interface
+interface SamplePadProps {
+  sample: {
+    id: string
+    name: string
+    buffer: AudioBuffer | null
+    key: string
+    color: string
+    isSynth: boolean
+  }
+  onPlay: () => void
+  onLoad: (file: File) => void
+  onRemove: () => void
+  isActive: boolean
+  isSelected: boolean
+  onSelect: () => void
+}
+
+// Update the SampleSettings component props interface
+interface SampleSettingsProps {
+  sample: {
+    id: string
+    name: string
+    buffer: AudioBuffer | null
+    key: string
+    color: string
+  }
+  volume: number
+  onVolumeChange: (value: number) => void
+  isLooping: boolean
+  onLoopingChange: (value: boolean) => void
+  isPolyphonic: boolean
+  onPolyphonicChange: (value: boolean) => void
+  onPlay: () => void
+  onStop: () => void
+}
+
 export default function SamplePadApp() {
-  const [samples, setSamples] = useState<Sample[]>([])
+  const [samples, setSamples] = useState<Pad[]>([])
   const [selectedSample, setSelectedSample] = useState<string | null>(null)
   const [isRecording, setIsRecording] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [isLooping, setIsLooping] = useState(false)
   const [recordedSequence, setRecordedSequence] = useState<{ sampleId: string; time: number }[]>([])
   const [recordStartTime, setRecordStartTime] = useState(0)
-  const [activeVisualizers, setActiveVisualizers] = useState<{ id: string; color: string; intensity: number }[]>([])
+  const [activeVisualizers, setActiveVisualizers] = useState<VisualizerState[]>([])
   const [savedLoops, setSavedLoops] = useState<SavedLoop[]>([])
   const [currentlyPlayingLoop, setCurrentlyPlayingLoop] = useState<string | null>(null)
+  const [editingLoopId, setEditingLoopId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState("")
 
   const audioContext = useRef<AudioContext | null>(null)
   const analyserNode = useRef<AnalyserNode | null>(null)
@@ -97,46 +157,95 @@ export default function SamplePadApp() {
   const visualizerTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const { toast } = useToast()
 
+  // Effects state and nodes
+  const effectsState = useRef({
+    reverbAmount: 20,
+    delayAmount: 0,
+    pitchShift: 0,
+    speed: 100,
+  })
+  const effectsGainNode = useRef<GainNode | null>(null)
+
+  // Add ref for managing visualizer updates
+  const visualizerUpdateQueue = useRef<{id: string, action: 'add' | 'remove'}[]>([])
+  const lastVisualizerUpdate = useRef<number>(0)
+
   // Initialize audio context
   useEffect(() => {
-    audioContext.current = new (window.AudioContext || (window as any).webkitAudioContext)()
-
-    // Create analyzer node for visualizations
-    if (audioContext.current) {
+    try {
+      audioContext.current = new (window.AudioContext || (window as any).webkitAudioContext)()
       analyserNode.current = audioContext.current.createAnalyser()
-      analyserNode.current.fftSize = 256
+      analyserNode.current.fftSize = 256 // Power of 2, affects frequency data resolution
+      analyserNode.current.smoothingTimeConstant = 0.8 // Smooth transitions
+      
+      effectsGainNode.current = audioContext.current.createGain()
+      effectsGainNode.current.gain.value = 1
+      
+      // Improved audio routing
+      effectsGainNode.current.connect(analyserNode.current)
       analyserNode.current.connect(audioContext.current.destination)
+    } catch (error) {
+      console.error("Failed to initialize audio context:", error)
+      toast({
+        title: "Audio Error",
+        description: "Failed to initialize audio system. Please refresh the page.",
+        variant: "destructive",
+      })
     }
-
+    
     // Initialize with empty sample pads
-    const initialSamples: Sample[] = defaultKeys.map((key, index) => {
-      // Check if this is one of the bottom eight pads (for default samples)
-      const isDefaultSample = index >= 8
-      const defaultSampleIndex = index - 8
-      const defaultSample = isDefaultSample ? DEFAULT_SAMPLES[defaultSampleIndex] : null
+    const initialSamples: Pad[] = defaultKeys.map((key, index) => {
+      // Map drums to the second row (indices 4-7)
+      const isDrumRow = index >= 4 && index < 8
+      const drumIndex = isDrumRow ? index - 4 : null
+      const drumSample = isDrumRow && drumIndex !== null && drumIndex < 4 ? DEFAULT_SAMPLES[drumIndex] : null
 
-      // Check if this is one of the bottom four pads (for chords)
-      const isBottomPad = index >= 12
-      const chordType = isBottomPad ? Object.keys(CHORDS)[index - 12] : null
+      // Map chord samples to the third row (indices 8-11)
+      const isChordRow = index >= 8 && index < 12
+      const chordIndex = isChordRow ? index - 8 : null
+      const chordSample = isChordRow && chordIndex !== null && chordIndex < 4 ? DEFAULT_SAMPLES[chordIndex + 4] : null
 
-      return {
-        id: `sample-${index}`,
-        name: isBottomPad 
-          ? `Chord ${chordType}` 
-          : isDefaultSample 
-            ? defaultSample!.name 
-            : `Empty Pad ${index + 1}`,
-        buffer: null,
-        key: key,
-        color: padColors[index % padColors.length],
-        volume: 1.0,
-        isLooping: false,
-        isCuttingOff: false,
-        sourceNode: null,
-        gainNode: null,
-        isSynth: isBottomPad,
-        chordFrequencies: isBottomPad ? CHORDS[chordType as keyof typeof CHORDS] : undefined,
-        defaultSampleFile: isDefaultSample ? defaultSample!.file : undefined,
+      // Map arpeggios to the last row (indices 12-15)
+      const isArpeggioRow = index >= 12
+      const arpeggioType = isArpeggioRow ? Object.keys(ARPEGGIOS)[index - 12] : null
+
+      if (isArpeggioRow) {
+        return {
+          id: `sample-${index}`,
+          name: arpeggioType || `Pad ${index + 1}`,
+          key: key,
+          color: padColors[index % padColors.length],
+          volume: 1.0,
+          isLooping: true,
+          isPolyphonic: false,
+          sourceNode: null,
+          gainNode: null,
+          type: 'synth' as const,
+          frequencies: ARPEGGIOS[arpeggioType as keyof typeof ARPEGGIOS] || [],
+          waveform: 'sine',
+          arpeggioPattern: ARPEGGIOS[arpeggioType as keyof typeof ARPEGGIOS]
+        }
+      } else {
+        return {
+          id: `sample-${index}`,
+          name: isChordRow 
+            ? chordSample?.name || `Pad ${index + 1}`
+            : isDrumRow
+              ? drumSample?.name || `Pad ${index + 1}`
+              : `Pad ${index + 1}`,
+          key: key,
+          color: padColors[index % padColors.length],
+          volume: 1.0,
+          isLooping: false,
+          isPolyphonic: !isArpeggioRow,
+          sourceNode: null,
+          gainNode: null,
+          type: 'sample' as const,
+          buffer: null,
+          defaultSampleFile: (isDrumRow && drumSample) || (isChordRow && chordSample) 
+            ? (isDrumRow ? drumSample : chordSample)?.file 
+            : undefined
+        }
       }
     })
 
@@ -146,9 +255,9 @@ export default function SamplePadApp() {
     const loadDefaultSamples = async () => {
       for (let i = 0; i < initialSamples.length; i++) {
         const sample = initialSamples[i]
-        if (sample.defaultSampleFile) {
+        if (sample.type === 'sample' && (sample as AudioSample).defaultSampleFile) {
           try {
-            const response = await fetch(`/samples/${sample.defaultSampleFile}`)
+            const response = await fetch(`/samples/${(sample as AudioSample).defaultSampleFile}`)
             const arrayBuffer = await response.arrayBuffer()
             if (audioContext.current) {
               const audioBuffer = await audioContext.current.decodeAudioData(arrayBuffer)
@@ -159,7 +268,7 @@ export default function SamplePadApp() {
               ))
             }
           } catch (error) {
-            console.error(`Error loading default sample ${sample.defaultSampleFile}:`, error)
+            console.error(`Error loading default sample ${(sample as AudioSample).defaultSampleFile}:`, error)
           }
         }
       }
@@ -185,15 +294,25 @@ export default function SamplePadApp() {
       const arrayBuffer = await file.arrayBuffer()
       const audioBuffer = await audioContext.current.decodeAudioData(arrayBuffer)
 
+      // Get the file name without extension
+      const fileName = file.name.replace(/\.[^/.]+$/, "")
+
       setSamples((prev) =>
         prev.map((sample) =>
-          sample.id === sampleId ? { ...sample, buffer: audioBuffer, name: file.name.substring(0, 20) } : sample,
+          sample.id === sampleId 
+            ? { 
+                ...sample, 
+                buffer: audioBuffer, 
+                name: fileName,
+                defaultSampleFile: undefined // Clear default sample file when loading custom sample
+              } 
+            : sample,
         ),
       )
 
       toast({
         title: "Sample loaded",
-        description: `${file.name} has been loaded successfully.`,
+        description: `${fileName} has been loaded successfully.`,
       })
     } catch (error) {
       console.error("Error loading audio file:", error)
@@ -206,7 +325,7 @@ export default function SamplePadApp() {
   }
 
   // Update sample settings
-  const updateSampleSettings = (sampleId: string, settings: Partial<Sample>) => {
+  const updateSampleSettings = (sampleId: string, settings: Partial<AudioSample | SynthPad>) => {
     setSamples((prev) =>
       prev.map((sample) => {
         if (sample.id === sampleId) {
@@ -216,64 +335,118 @@ export default function SamplePadApp() {
           }
 
           // If we're updating loop state and the sample is playing, update the source node
-          if (settings.isLooping !== undefined && sample.sourceNode) {
+          if (settings.isLooping !== undefined && sample.sourceNode && 'loop' in sample.sourceNode) {
             sample.sourceNode.loop = settings.isLooping
           }
 
-          // If we're updating cut off state and the sample is playing
-          if (settings.isCuttingOff !== undefined && sample.sourceNode) {
-            if (settings.isCuttingOff) {
-              // If cutting off is enabled, stop any existing playback
-              sample.sourceNode.stop()
-              return { ...sample, ...settings, sourceNode: null, gainNode: null }
+          // If we're updating polyphonic state
+          if (settings.isPolyphonic !== undefined) {
+            // If turning off polyphonic mode while playing, stop all instances
+            if (!settings.isPolyphonic && sample.sourceNode) {
+              stopSample(sampleId)
+            }
+            // Update the setting
+            if (sample.type === 'synth') {
+              return { ...sample, ...settings } as SynthPad
+            } else {
+              return { ...sample, ...settings } as AudioSample
             }
           }
 
-          return { ...sample, ...settings }
+          // Preserve the type when updating settings
+          if (sample.type === 'synth') {
+            return { ...sample, ...settings } as SynthPad
+          } else {
+            return { ...sample, ...settings } as AudioSample
+          }
         }
         return sample
       })
     )
   }
 
-  // Stop a sample's playback
+  // Stop a sample
   const stopSample = (sampleId: string) => {
-    setSamples((prev) =>
-      prev.map((sample) => {
-        if (sample.id === sampleId && sample.sourceNode) {
-          sample.sourceNode.stop()
-          return { ...sample, sourceNode: null, gainNode: null }
-        }
-        return sample
-      })
-    )
+    const sample = samples.find((s) => s.id === sampleId)
+    if (!sample) return
+
+    // Stop all instances of the sample
+    if (sample.sourceNode) {
+      if (sample.type === 'synth') {
+        // For synth pads, stop the oscillator
+        const oscillator = sample.sourceNode as OscillatorNode
+        oscillator.stop()
+        oscillator.disconnect()
+      } else {
+        // For audio samples, stop the buffer source
+        const bufferSource = sample.sourceNode as AudioBufferSourceNode
+        bufferSource.stop()
+        bufferSource.disconnect()
+      }
+      sample.sourceNode = null
+    }
+
+    if (sample.gainNode) {
+      sample.gainNode.disconnect()
+      sample.gainNode = null
+    }
+
+    // Update the sample settings to reflect stopped state
+    updateSampleSettings(sampleId, {
+      sourceNode: null,
+      gainNode: null,
+      isLooping: false // Turn off looping when stopping
+    })
+
+    // Update active state
+    setActiveVisualizers(prev => prev.filter((v) => v.id !== sampleId))
   }
 
   // Remove a sample
   const removeSample = (sampleId: string) => {
-    // Stop the sample if it's playing
     stopSample(sampleId)
-    
-    // Reset the sample to its initial state
-    setSamples((prev) =>
-      prev.map((sample) => {
-        if (sample.id === sampleId) {
-          return {
-            ...sample,
-            buffer: null,
-            name: `Empty Pad ${sample.id.split('-')[1]}`,
-            volume: 1.0,
-            isLooping: false,
-            isCuttingOff: false,
-            sourceNode: null,
-            gainNode: null,
-          }
-        }
-        return sample
-      })
-    )
+    const sample = samples.find((s) => s.id === sampleId)
+    if (!sample) return
 
-    // If the removed sample was selected, clear the selection
+    // Reset the sample to its initial state
+    const index = parseInt(sample.id.split('-')[1])
+    const isDrumRow = index >= 4 && index < 8
+    const drumIndex = isDrumRow ? index - 4 : null
+    const drumSample = isDrumRow && drumIndex !== null && drumIndex < 4 ? DEFAULT_SAMPLES[drumIndex] : null
+
+    const isChordRow = index >= 8 && index < 12
+    const chordIndex = isChordRow ? index - 8 : null
+    const chordSample = isChordRow && chordIndex !== null && chordIndex < 4 ? DEFAULT_SAMPLES[chordIndex + 4] : null
+
+    const isArpeggioRow = index >= 12
+    const arpeggioType = isArpeggioRow ? Object.keys(ARPEGGIOS)[index - 12] : null
+
+    updateSampleSettings(sampleId, {
+      buffer: null,
+      name: isArpeggioRow 
+        ? arpeggioType || `Pad ${index + 1}`
+        : isChordRow 
+          ? chordSample?.name || `Pad ${index + 1}`
+          : isDrumRow
+            ? drumSample?.name || `Pad ${index + 1}`
+            : `Pad ${index + 1}`,
+      key: sample.key,
+      color: sample.color,
+      volume: 1,
+      isLooping: isArpeggioRow,
+      isPolyphonic: !isArpeggioRow,
+      sourceNode: null,
+      gainNode: null,
+      type: isArpeggioRow ? 'synth' : isChordRow ? 'sample' : isDrumRow ? 'sample' : 'sample',
+      frequencies: isArpeggioRow ? ARPEGGIOS[arpeggioType as keyof typeof ARPEGGIOS] : undefined,
+      waveform: isArpeggioRow ? 'sine' : undefined,
+      defaultSampleFile: (isDrumRow && drumSample) || (isChordRow && chordSample) 
+        ? (isDrumRow ? drumSample : chordSample)?.file 
+        : undefined,
+      arpeggioPattern: isArpeggioRow ? ARPEGGIOS[arpeggioType as keyof typeof ARPEGGIOS] : undefined,
+    })
+
+    // Clear selection if this was the selected sample
     if (selectedSample === sampleId) {
       setSelectedSample(null)
     }
@@ -284,107 +457,145 @@ export default function SamplePadApp() {
     })
   }
 
-  // Play a sample by its ID
-  const playSample = (sampleId: string) => {
-    if (!audioContext.current) return
+  // Update effects settings
+  const updateEffects = (type: 'reverb' | 'delay' | 'pitch' | 'speed', value: number) => {
+    if (!audioContext.current || !effectsGainNode.current) return
 
-    // Resume audio context if suspended (autoplay policy)
-    if (audioContext.current.state === "suspended") {
-      audioContext.current.resume()
+    switch (type) {
+      case 'reverb':
+        effectsState.current.reverbAmount = value
+        effectsGainNode.current.gain.value = 1 + (value / 100)
+        break
+      case 'delay':
+        effectsState.current.delayAmount = value
+        effectsGainNode.current.gain.value = 1 + (value / 200)
+        break
+      case 'pitch':
+        effectsState.current.pitchShift = value
+        effectsGainNode.current.gain.value = 1 + (Math.abs(value) / 100)
+        break
+      case 'speed':
+        effectsState.current.speed = value
+        break
     }
+  }
 
-    const sample = samples.find((s) => s.id === sampleId)
-    if (!sample) return
-
-    // Stop existing playback if cutting off
-    if (sample.isCuttingOff && sample.sourceNode) {
-      sample.sourceNode.stop()
-    }
-
-    if (sample.isSynth && sample.chordFrequencies) {
-      // Create synth nodes for each frequency in the chord
-      const synthNodes = sample.chordFrequencies.map(frequency => {
-        const oscillator = audioContext.current!.createOscillator()
-        const gainNode = audioContext.current!.createGain()
-        
-        oscillator.type = 'sine'
-        oscillator.frequency.value = frequency
-        
-        // Add some attack and release
-        gainNode.gain.setValueAtTime(0, audioContext.current!.currentTime)
-        gainNode.gain.linearRampToValueAtTime(sample.volume, audioContext.current!.currentTime + 0.1)
-        gainNode.gain.linearRampToValueAtTime(0, audioContext.current!.currentTime + 1.0)
-        
-        oscillator.connect(gainNode)
-        gainNode.connect(analyserNode.current!)
-        
-        oscillator.start()
-        oscillator.stop(audioContext.current!.currentTime + 1.0)
-        
-        return { oscillator, gainNode }
-      })
-
-      // Update sample with synth nodes
-      updateSampleSettings(sampleId, { 
-        sourceNode: synthNodes[0].oscillator as any, 
-        gainNode: synthNodes[0].gainNode
-      })
-
-      // Clean up nodes after they finish
-      setTimeout(() => {
-        synthNodes.forEach(({ oscillator, gainNode }) => {
-          oscillator.disconnect()
-          gainNode.disconnect()
-        })
-        updateSampleSettings(sampleId, { sourceNode: null, gainNode: null })
-      }, 1000)
-    } else if (sample.buffer) {
-      // Regular sample playback
-      const source = audioContext.current.createBufferSource()
-      source.buffer = sample.buffer
-      source.loop = sample.isLooping
-
-      const gainNode = audioContext.current.createGain()
-      gainNode.gain.value = sample.volume
-
-      source.connect(gainNode)
-      gainNode.connect(analyserNode.current!)
-
-      source.start(0)
-
-      updateSampleSettings(sampleId, { sourceNode: source, gainNode: gainNode })
-    }
-
-    // Record the sample trigger if recording
-    if (isRecording) {
-      const now = Date.now()
-      const timeSinceStart = now - recordStartTime
-      setRecordedSequence((prev) => [...prev, { sampleId, time: timeSinceStart }])
-    }
-
-    // Update active visualizers
-    setActiveVisualizers(prev => {
-      if (visualizerTimeoutRef.current) {
-        clearTimeout(visualizerTimeoutRef.current)
+  // Improved play function with better audio handling
+  const playSoundSource = (pad: Pad) => {
+    try {
+      // Record the sequence if recording is active
+      if (isRecording) {
+        const timeSinceStart = Date.now() - recordStartTime
+        setRecordedSequence(prev => [...prev, { sampleId: pad.id, time: timeSinceStart }])
       }
 
-      const newVisualizers = [
-        ...prev.filter(v => v.id !== sampleId),
-        { id: sampleId, color: sample.color, intensity: 1 }
-      ]
+      // Stop any existing playback if not polyphonic
+      if (!pad.isPolyphonic) {
+        stopSample(pad.id)
+      }
 
-      visualizerTimeoutRef.current = setTimeout(() => {
-        setActiveVisualizers(current => 
-          current.map(v => 
-            v.id === sampleId 
-              ? { ...v, intensity: Math.max(0, v.intensity - 0.1) }
-              : v
-          ).filter(v => v.intensity > 0)
-        )
-      }, 50)
+      // Resume audio context if suspended
+      if (audioContext.current?.state === "suspended") {
+        audioContext.current?.resume().catch(console.error)
+      }
 
-      return newVisualizers
+      let nodes
+      if (pad.type === 'synth') {
+        nodes = playSynth(pad as SynthPad)
+        if (nodes) {
+          updateSampleSettings(pad.id, {
+            sourceNode: nodes.oscillator,
+            gainNode: nodes.gainNode
+          })
+        }
+      } else {
+        nodes = playSample(pad as AudioSample)
+        if (nodes) {
+          updateSampleSettings(pad.id, {
+            sourceNode: nodes.sourceNode,
+            gainNode: nodes.gainNode
+          })
+        }
+      }
+      
+      // Update visualizer
+      updateVisualizer(pad.id, 'add')
+      
+      // Schedule visualizer cleanup
+      if (!pad.isLooping) {
+        const duration = pad.type === 'synth' ? 1000 : (pad.buffer?.duration || 1) * 1000
+        setTimeout(() => {
+          updateVisualizer(pad.id, 'remove')
+        }, duration)
+      }
+    } catch (error) {
+      console.error("Error playing sound:", error)
+      toast({
+        title: "Playback Error",
+        description: "Failed to play the sound. Please try again.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  const playSynth = (pad: SynthPad) => {
+    if (!audioContext.current || !effectsGainNode.current) return
+
+    const synthNodes = pad.frequencies.map((frequency, index) => {
+      const oscillator = audioContext.current!.createOscillator()
+      const gainNode = audioContext.current!.createGain()
+      
+      oscillator.type = pad.waveform
+      oscillator.frequency.value = frequency * (effectsState.current.speed / 100)
+      
+      // Attack and release configuration
+      gainNode.gain.setValueAtTime(0, audioContext.current!.currentTime + (index * 0.1))
+      gainNode.gain.linearRampToValueAtTime(pad.volume, audioContext.current!.currentTime + (index * 0.1) + 0.05)
+      gainNode.gain.linearRampToValueAtTime(0, audioContext.current!.currentTime + (index * 0.1) + 0.4)
+      
+      oscillator.connect(gainNode)
+      gainNode.connect(effectsGainNode.current!)
+      
+      return { oscillator, gainNode }
     })
+
+    // Start and schedule cleanup
+    synthNodes.forEach(({ oscillator }, index) => {
+      oscillator.start(audioContext.current!.currentTime + (index * 0.1))
+      oscillator.stop(audioContext.current!.currentTime + (index * 0.1) + 0.4)
+    })
+
+    return synthNodes[0]
+  }
+
+  const playSample = (pad: AudioSample) => {
+    if (!audioContext.current || !effectsGainNode.current || !pad.buffer) return
+
+    const source = audioContext.current.createBufferSource()
+    source.buffer = pad.buffer
+    source.loop = pad.isLooping
+    source.playbackRate.value = effectsState.current.speed / 100
+
+    const gainNode = audioContext.current.createGain()
+    gainNode.gain.value = pad.volume
+
+    source.connect(gainNode)
+    gainNode.connect(effectsGainNode.current)
+
+    // Add an onended handler to clean up when the sample finishes playing
+    source.onended = () => {
+      if (!pad.isLooping) {
+        updateSampleSettings(pad.id, {
+          sourceNode: null,
+          gainNode: null
+        })
+        updateVisualizer(pad.id, 'remove')
+      }
+    }
+
+    source.start(0)
+
+    return { sourceNode: source, gainNode }
   }
 
   // Start recording a loop
@@ -439,18 +650,27 @@ export default function SamplePadApp() {
     setIsPlaying(true)
     setCurrentlyPlayingLoop(loopId)
 
-    // Schedule all sample triggers
-    loop.events.forEach((event) => {
-      setTimeout(() => {
-        playSample(event.sampleId)
-      }, event.time)
-    })
+    const playLoopEvents = () => {
+      // Schedule all sample triggers
+      loop.events.forEach((event) => {
+        setTimeout(() => {
+          playSoundSource(samples.find((s) => s.id === event.sampleId) as Pad)
+        }, event.time)
+      })
 
-    // Schedule the end of playback
-    setTimeout(() => {
-      setIsPlaying(false)
-      setCurrentlyPlayingLoop(null)
-    }, loop.duration)
+      // If looping is enabled, schedule the next iteration
+      if (isLooping) {
+        setTimeout(playLoopEvents, loop.duration)
+      } else {
+        // If not looping, schedule the end of playback
+        setTimeout(() => {
+          setIsPlaying(false)
+          setCurrentlyPlayingLoop(null)
+        }, loop.duration)
+      }
+    }
+
+    playLoopEvents()
   }
 
   // Stop loop playback
@@ -469,6 +689,24 @@ export default function SamplePadApp() {
       }
       setCurrentlyPlayingLoop(null)
       setIsPlaying(false)
+      setIsLooping(false) // Stop looping when stopping playback
+    }
+  }
+
+  // Toggle loop state
+  const toggleLoop = () => {
+    setIsLooping(!isLooping)
+    if (isPlaying && currentlyPlayingLoop) {
+      const loop = savedLoops.find(l => l.id === currentlyPlayingLoop)
+      if (!loop) return
+
+      // Stop current playback
+      stopLoop()
+
+      // If we're enabling looping, start playback again
+      if (!isLooping) {
+        playLoop(currentlyPlayingLoop)
+      }
     }
   }
 
@@ -488,12 +726,84 @@ export default function SamplePadApp() {
     ))
   }
 
-  // Clean up timeouts on unmount
+  // Improved visualizer management
+  const updateVisualizer = (sampleId: string, action: 'add' | 'remove') => {
+    const now = performance.now()
+    const timeSinceLastUpdate = now - lastVisualizerUpdate.current
+    
+    // Queue updates if they're coming too fast
+    if (timeSinceLastUpdate < 16) { // ~60fps
+      visualizerUpdateQueue.current.push({ id: sampleId, action })
+      return
+    }
+    
+    setActiveVisualizers(prev => {
+      if (action === 'remove') {
+        return prev.filter(v => v.id !== sampleId)
+      }
+      
+      const sample = samples.find(s => s.id === sampleId)
+      if (!sample) return prev
+      
+      // Determine frequency band based on sample type or position
+      const frequencyBand = getFrequencyBand(sample)
+      
+      const newVisualizer: VisualizerState = {
+        id: sampleId,
+        color: sample.color,
+        intensity: 1,
+        frequencyBand
+      }
+      
+      return [...prev.filter(v => v.id !== sampleId), newVisualizer]
+    })
+    
+    lastVisualizerUpdate.current = now
+  }
+
+  // Helper function to determine frequency band
+  const getFrequencyBand = (sample: Pad): 'bass' | 'mid' | 'high' => {
+    const index = parseInt(sample.id.split('-')[1])
+    if (index >= 12) return 'high'  // Arpeggio row
+    if (index >= 8) return 'mid'    // Chord row
+    if (index >= 4) return 'bass'   // Drum row
+    return 'mid'                     // Default
+  }
+
+  // Process queued visualizer updates
+  useEffect(() => {
+    const processQueue = () => {
+      if (visualizerUpdateQueue.current.length > 0) {
+        const update = visualizerUpdateQueue.current.shift()
+        if (update) {
+          updateVisualizer(update.id, update.action)
+        }
+      }
+      requestAnimationFrame(processQueue)
+    }
+
+    const animationFrame = requestAnimationFrame(processQueue)
+    return () => cancelAnimationFrame(animationFrame)
+  }, [])
+
+  // Improved cleanup
   useEffect(() => {
     return () => {
+      // Clean up audio context
+      if (audioContext.current?.state !== 'closed') {
+        audioContext.current?.close().catch(console.error)
+      }
+      
+      // Clean up intervals and timeouts
+      if (loopInterval.current) {
+        clearInterval(loopInterval.current)
+      }
       if (visualizerTimeoutRef.current) {
         clearTimeout(visualizerTimeoutRef.current)
       }
+      
+      // Clear visualizer state
+      setActiveVisualizers([])
     }
   }, [])
 
@@ -508,7 +818,7 @@ export default function SamplePadApp() {
       // Handle Ctrl/Cmd + key for selection
       if ((e.ctrlKey || e.metaKey) && !e.altKey) {
         const key = e.key.toLowerCase()
-        const sample = samples.find((s) => s.key.toLowerCase() === key)
+        const sample = samples.find((s: Pad) => s.key.toLowerCase() === key)
         if (sample) {
           setSelectedSample(sample.id)
           return
@@ -521,10 +831,10 @@ export default function SamplePadApp() {
       }
 
       const key = e.key.toLowerCase()
-      const sample = samples.find((s) => s.key.toLowerCase() === key)
+      const sample = samples.find((s: Pad) => s.key.toLowerCase() === key)
 
-      if (sample && (sample.buffer || sample.isSynth)) {
-        playSample(sample.id)
+      if (sample && ((sample.type === 'sample' && sample.buffer) || sample.type === 'synth')) {
+        playSoundSource(sample)
         e.preventDefault()
       }
     }
@@ -534,6 +844,57 @@ export default function SamplePadApp() {
       window.removeEventListener("keydown", handleKeyDown)
     }
   }, [samples])
+
+  // Update the SampleSettings component usage
+  const selectedSampleData = samples.find((s: Pad) => s.id === selectedSample)
+
+  const handleVolumeChange = (value: number) => {
+    if (selectedSample) {
+      updateSampleSettings(selectedSample, { volume: value })
+    }
+  }
+
+  const handleLoopingChange = (value: boolean) => {
+    if (selectedSample) {
+      const sample = samples.find(s => s.id === selectedSample)
+      if (!sample) return
+
+      // If turning off looping while playing, stop the sample
+      if (!value && sample.sourceNode) {
+        stopSample(selectedSample)
+      } else {
+        updateSampleSettings(selectedSample, { isLooping: value })
+      }
+    }
+  }
+
+  const handlePolyphonicChange = (value: boolean) => {
+    if (selectedSample) {
+      const sample = samples.find(s => s.id === selectedSample)
+      if (!sample) return
+
+      // If turning off polyphonic mode while playing, stop all instances
+      if (!value && sample.sourceNode) {
+        stopSample(selectedSample)
+      }
+      updateSampleSettings(selectedSample, { isPolyphonic: value })
+    }
+  }
+
+  const handlePlay = () => {
+    if (selectedSample) {
+      const sample = samples.find((s: Pad) => s.id === selectedSample)
+      if (sample) {
+        playSoundSource(sample)
+      }
+    }
+  }
+
+  const handleStop = () => {
+    if (selectedSample) {
+      stopSample(selectedSample)
+    }
+  }
 
   return (
     <div className="flex flex-col min-h-screen bg-zinc-900 text-white">
@@ -600,8 +961,15 @@ export default function SamplePadApp() {
                   {samples.map((sample) => (
                     <SamplePad
                       key={sample.id}
-                      sample={sample}
-                      onPlay={() => playSample(sample.id)}
+                      sample={{
+                        id: sample.id,
+                        name: sample.name,
+                        buffer: sample.type === 'sample' ? sample.buffer : null,
+                        key: sample.key,
+                        color: sample.color,
+                        isSynth: sample.type === 'synth'
+                      }}
+                      onPlay={() => playSoundSource(sample)}
                       onLoad={(file) => loadSample(file, sample.id)}
                       onRemove={() => removeSample(sample.id)}
                       isActive={activeVisualizers.some(v => v.id === sample.id)}
@@ -641,26 +1009,23 @@ export default function SamplePadApp() {
               <h2 className="text-lg font-semibold mb-2">Sample Settings</h2>
               <div className="scale-90 origin-top-left">
                 <SampleSettings
-                  sample={samples.find((s) => s.id === selectedSample) || samples[0] || {
-                    id: 'default',
-                    name: 'No Sample Selected',
-                    buffer: null,
-                    key: '',
-                    color: 'bg-zinc-600',
-                    volume: 1.0,
-                    isLooping: false,
-                    isCuttingOff: false,
-                    sourceNode: null,
-                    gainNode: null
+                  sample={{
+                    id: selectedSampleData?.id || 'default',
+                    name: selectedSampleData?.name || 'No Sample Selected',
+                    buffer: selectedSampleData?.type === 'sample' 
+                      ? (selectedSampleData as AudioSample).buffer 
+                      : null,
+                    key: selectedSampleData?.key || '',
+                    color: selectedSampleData?.color || 'bg-zinc-600'
                   }}
-                  volume={samples.find((s) => s.id === selectedSample)?.volume ?? 1.0}
-                  onVolumeChange={(value) => selectedSample && updateSampleSettings(selectedSample, { volume: value })}
-                  isLooping={samples.find((s) => s.id === selectedSample)?.isLooping ?? false}
-                  onLoopingChange={(value) => selectedSample && updateSampleSettings(selectedSample, { isLooping: value })}
-                  isCuttingOff={samples.find((s) => s.id === selectedSample)?.isCuttingOff ?? false}
-                  onCuttingOffChange={(value) => selectedSample && updateSampleSettings(selectedSample, { isCuttingOff: value })}
-                  onPlay={() => selectedSample && playSample(selectedSample)}
-                  onStop={() => selectedSample && stopSample(selectedSample)}
+                  volume={selectedSampleData?.volume ?? 1.0}
+                  onVolumeChange={handleVolumeChange}
+                  isLooping={selectedSampleData?.isLooping ?? false}
+                  onLoopingChange={handleLoopingChange}
+                  isPolyphonic={selectedSampleData?.isPolyphonic ?? false}
+                  onPolyphonicChange={handlePolyphonicChange}
+                  onPlay={handlePlay}
+                  onStop={handleStop}
                 />
               </div>
             </CardContent>
@@ -672,17 +1037,33 @@ export default function SamplePadApp() {
               <LoopRecorder
                 isRecording={isRecording}
                 isPlaying={isPlaying}
+                isLooping={isLooping}
                 onStartRecording={startRecording}
                 onStopRecording={stopRecording}
                 onPlayLoop={playLoop}
                 onStopLoop={stopLoop}
                 onClearLoop={clearLoop}
                 onRenameLoop={renameLoop}
+                onToggleLoop={toggleLoop}
                 savedLoops={savedLoops}
                 currentlyPlayingLoop={currentlyPlayingLoop}
               />
             </CardContent>
           </Card>
+        </div>
+
+        {/* Effects Panel */}
+        <div className="mt-4">
+          <EffectsPanel
+            reverbAmount={effectsState.current.reverbAmount}
+            delayAmount={effectsState.current.delayAmount}
+            pitchShift={effectsState.current.pitchShift}
+            speed={effectsState.current.speed}
+            onReverbChange={(value) => updateEffects('reverb', value)}
+            onDelayChange={(value) => updateEffects('delay', value)}
+            onPitchChange={(value) => updateEffects('pitch', value)}
+            onSpeedChange={(value) => updateEffects('speed', value)}
+          />
         </div>
       </main>
     </div>

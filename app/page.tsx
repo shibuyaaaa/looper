@@ -92,14 +92,6 @@ const padColors = [
 // Default key mapping (4x4 grid)
 const defaultKeys = ["1", "2", "3", "4", "q", "w", "e", "r", "a", "s", "d", "f", "z", "x", "c", "v"]
 
-// Update the visualizer state interface
-interface VisualizerState {
-  id: string
-  color: string
-  intensity: number
-  frequencyBand?: 'bass' | 'mid' | 'high'  // Add frequency band tracking
-}
-
 // Update the SamplePad component props interface
 interface SamplePadProps {
   sample: {
@@ -140,12 +132,12 @@ interface SampleSettingsProps {
 export default function SamplePadApp() {
   const [samples, setSamples] = useState<Pad[]>([])
   const [selectedSample, setSelectedSample] = useState<string | null>(null)
+  const [activePads, setActivePads] = useState<Set<string>>(new Set())
   const [isRecording, setIsRecording] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isLooping, setIsLooping] = useState(false)
   const [recordedSequence, setRecordedSequence] = useState<{ sampleId: string; time: number }[]>([])
   const [recordStartTime, setRecordStartTime] = useState(0)
-  const [activeVisualizers, setActiveVisualizers] = useState<VisualizerState[]>([])
   const [savedLoops, setSavedLoops] = useState<SavedLoop[]>([])
   const [currentlyPlayingLoop, setCurrentlyPlayingLoop] = useState<string | null>(null)
   const [editingLoopId, setEditingLoopId] = useState<string | null>(null)
@@ -165,11 +157,6 @@ export default function SamplePadApp() {
     speed: 100,
   })
   const effectsGainNode = useRef<GainNode | null>(null)
-
-  // Add ref for managing visualizer updates
-  const visualizerUpdateQueue = useRef<{id: string, action: 'add' | 'remove'}[]>([])
-  const lastVisualizerUpdate = useRef<number>(0)
-
   // Initialize audio context
   useEffect(() => {
     try {
@@ -291,35 +278,112 @@ export default function SamplePadApp() {
     if (!audioContext.current) return
 
     try {
+      // Read the file as an ArrayBuffer
       const arrayBuffer = await file.arrayBuffer()
+      
+      // Decode the audio data
       const audioBuffer = await audioContext.current.decodeAudioData(arrayBuffer)
+      
+      // Update the sample with the decoded buffer
+      setSamples(prevSamples => {
+        return prevSamples.map(sample => {
+          if (sample.id === sampleId) {
+            if (sample.type === 'sample') {
+              return {
+                ...sample,
+                buffer: audioBuffer,
+                name: file.name.replace(/\.[^/.]+$/, "") // Remove file extension
+              } as AudioSample
+            }
+          }
+          return sample
+        })
+      })
 
-      // Get the file name without extension
-      const fileName = file.name.replace(/\.[^/.]+$/, "")
-
-      setSamples((prev) =>
-        prev.map((sample) =>
-          sample.id === sampleId 
-            ? { 
-                ...sample, 
-                buffer: audioBuffer, 
-                name: fileName,
-                defaultSampleFile: undefined // Clear default sample file when loading custom sample
-              } 
-            : sample,
-        ),
-      )
-
+      // Show success toast
       toast({
         title: "Sample loaded",
-        description: `${fileName} has been loaded successfully.`,
+        description: `${file.name} has been loaded successfully.`,
+        duration: 2000,
       })
     } catch (error) {
       console.error("Error loading audio file:", error)
       toast({
-        title: "Error loading sample",
-        description: "Could not load the audio file. Please try another file.",
+        title: "Error",
+        description: "Failed to load audio sample. Please try another file.",
         variant: "destructive",
+        duration: 3000,
+      })
+    }
+  }
+  
+  // Generate sound from text using ElevenLabs API
+  const generateSound = async (text: string, duration: number, sampleId: string) => {
+    if (!audioContext.current) return
+
+    try {
+      toast({
+        title: "Generating sound",
+        description: "Please wait while we generate your sound...",
+        duration: 5000,
+      })
+      
+      const response = await fetch('/api/generate-sound', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text, duration }),
+      })
+      
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.message || 'Failed to generate sound')
+      }
+      
+      const data = await response.json()
+      
+      // Convert base64 audio URL to ArrayBuffer
+      const audioUrl = data.audioUrl
+      const base64Data = audioUrl.split(',')[1]
+      const binaryString = window.atob(base64Data)
+      const bytes = new Uint8Array(binaryString.length)
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i)
+      }
+      
+      // Decode the audio data
+      const audioBuffer = await audioContext.current.decodeAudioData(bytes.buffer)
+      
+      // Update the sample with the generated audio
+      setSamples(prevSamples => {
+        return prevSamples.map(sample => {
+          if (sample.id === sampleId) {
+            if (sample.type === 'sample') {
+              return {
+                ...sample,
+                buffer: audioBuffer,
+                name: text.length > 20 ? `${text.substring(0, 20)}...` : text
+              } as AudioSample
+            }
+          }
+          return sample
+        })
+      })
+
+      // Show success toast
+      toast({
+        title: "Sound generated",
+        description: `Sound effect has been generated successfully.`,
+        duration: 2000,
+      })
+    } catch (error) {
+      console.error("Error generating sound:", error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to generate sound effect.",
+        variant: "destructive",
+        duration: 3000,
       })
     }
   }
@@ -397,9 +461,29 @@ export default function SamplePadApp() {
       gainNode: null,
       isLooping: false // Turn off looping when stopping
     })
+  }
 
-    // Update active state
-    setActiveVisualizers(prev => prev.filter((v) => v.id !== sampleId))
+  // Stop all playing samples
+  const stopAllSamples = () => {
+    // Clear active pads visual state
+    setActivePads(new Set())
+    
+    // Stop each sample that might be playing
+    samples.forEach(sample => {
+      if (sample.sourceNode || sample.gainNode) {
+        stopSample(sample.id)
+      }
+    })
+    
+    // Also stop any loop playback if it's running
+    if (isPlaying) {
+      stopLoop()
+    }
+    
+    toast({
+      title: "All Audio Stopped",
+      description: "All playing sounds have been stopped.",
+    })
   }
 
   // Remove a sample
@@ -483,6 +567,22 @@ export default function SamplePadApp() {
   // Improved play function with better audio handling
   const playSoundSource = (pad: Pad) => {
     try {
+      // Add visual feedback by setting the pad as active temporarily
+      setActivePads(prev => {
+        const newActivePads = new Set(prev)
+        newActivePads.add(pad.id)
+        return newActivePads
+      })
+      
+      // Remove active state after a short delay
+      setTimeout(() => {
+        setActivePads(prev => {
+          const newActivePads = new Set(prev)
+          newActivePads.delete(pad.id)
+          return newActivePads
+        })
+      }, 150) // Match this with the CSS animation duration
+
       // Record the sequence if recording is active
       if (isRecording) {
         const timeSinceStart = Date.now() - recordStartTime
@@ -516,17 +616,6 @@ export default function SamplePadApp() {
             gainNode: nodes.gainNode
           })
         }
-      }
-      
-      // Update visualizer
-      updateVisualizer(pad.id, 'add')
-      
-      // Schedule visualizer cleanup
-      if (!pad.isLooping) {
-        const duration = pad.type === 'synth' ? 1000 : (pad.buffer?.duration || 1) * 1000
-        setTimeout(() => {
-          updateVisualizer(pad.id, 'remove')
-        }, duration)
       }
     } catch (error) {
       console.error("Error playing sound:", error)
@@ -589,7 +678,6 @@ export default function SamplePadApp() {
           sourceNode: null,
           gainNode: null
         })
-        updateVisualizer(pad.id, 'remove')
       }
     }
 
@@ -726,87 +814,6 @@ export default function SamplePadApp() {
     ))
   }
 
-  // Improved visualizer management
-  const updateVisualizer = (sampleId: string, action: 'add' | 'remove') => {
-    const now = performance.now()
-    const timeSinceLastUpdate = now - lastVisualizerUpdate.current
-    
-    // Queue updates if they're coming too fast
-    if (timeSinceLastUpdate < 16) { // ~60fps
-      visualizerUpdateQueue.current.push({ id: sampleId, action })
-      return
-    }
-    
-    setActiveVisualizers(prev => {
-      if (action === 'remove') {
-        return prev.filter(v => v.id !== sampleId)
-      }
-      
-      const sample = samples.find(s => s.id === sampleId)
-      if (!sample) return prev
-      
-      // Determine frequency band based on sample type or position
-      const frequencyBand = getFrequencyBand(sample)
-      
-      const newVisualizer: VisualizerState = {
-        id: sampleId,
-        color: sample.color,
-        intensity: 1,
-        frequencyBand
-      }
-      
-      return [...prev.filter(v => v.id !== sampleId), newVisualizer]
-    })
-    
-    lastVisualizerUpdate.current = now
-  }
-
-  // Helper function to determine frequency band
-  const getFrequencyBand = (sample: Pad): 'bass' | 'mid' | 'high' => {
-    const index = parseInt(sample.id.split('-')[1])
-    if (index >= 12) return 'high'  // Arpeggio row
-    if (index >= 8) return 'mid'    // Chord row
-    if (index >= 4) return 'bass'   // Drum row
-    return 'mid'                     // Default
-  }
-
-  // Process queued visualizer updates
-  useEffect(() => {
-    const processQueue = () => {
-      if (visualizerUpdateQueue.current.length > 0) {
-        const update = visualizerUpdateQueue.current.shift()
-        if (update) {
-          updateVisualizer(update.id, update.action)
-        }
-      }
-      requestAnimationFrame(processQueue)
-    }
-
-    const animationFrame = requestAnimationFrame(processQueue)
-    return () => cancelAnimationFrame(animationFrame)
-  }, [])
-
-  // Improved cleanup
-  useEffect(() => {
-    return () => {
-      // Clean up audio context
-      if (audioContext.current?.state !== 'closed') {
-        audioContext.current?.close().catch(console.error)
-      }
-      
-      // Clean up intervals and timeouts
-      if (loopInterval.current) {
-        clearInterval(loopInterval.current)
-      }
-      if (visualizerTimeoutRef.current) {
-        clearTimeout(visualizerTimeoutRef.current)
-      }
-      
-      // Clear visualizer state
-      setActiveVisualizers([])
-    }
-  }, [])
-
   // Handle keyboard events to trigger samples
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -898,13 +905,28 @@ export default function SamplePadApp() {
 
   return (
     <div className="flex flex-col min-h-screen bg-zinc-900 text-white">
-      <header className="border-b border-zinc-800 p-4 flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Looper</h1>
-        <div className="flex gap-2">
+      <header className="p-4 border-b border-zinc-700 flex justify-between items-center bg-zinc-900">
+        <div className="flex items-center">
+          <Music className="h-6 w-6 mr-2" />
+          <h1 className="text-xl font-bold">Looper</h1>
+        </div>
+        <div className="flex items-center space-x-2">
+          <Button 
+            variant="destructive" 
+            size="sm" 
+            onClick={stopAllSamples}
+            className="animate-pulse-subtle hover:animate-none"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clipRule="evenodd" />
+            </svg>
+            Stop All
+          </Button>
           <Dialog>
             <DialogTrigger asChild>
-              <Button variant="ghost" size="icon" className="text-white hover:text-white/80">
-                <Info className="h-5 w-5" />
+              <Button variant="outline" size="sm">
+                <Info className="h-4 w-4 mr-2" />
+                Help
               </Button>
             </DialogTrigger>
             <DialogContent className="bg-zinc-800 border-zinc-700 text-white">
@@ -939,7 +961,6 @@ export default function SamplePadApp() {
                   </ul>
                 </div>
                 <div>
-                  <h3 className="font-semibold mb-2">Visualizer</h3>
                   <ul className="list-disc pl-4 space-y-1">
                     <li>Watch real-time audio visualization</li>
                     <li>Each pad has its own color in the visualizer</li>
@@ -951,13 +972,12 @@ export default function SamplePadApp() {
         </div>
       </header>
 
-      <main className="flex-1 p-4 overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-full">
-          {/* Sample Pads Section */}
-          <div className="lg:col-span-2 space-y-6">
-            <Card className="bg-zinc-800 border-zinc-700">
-              <CardContent className="p-4">
-                <div className="grid grid-cols-4 gap-2 max-w-xl mx-auto">
+      <main className="flex-1 p-2 sm:p-4 overflow-y-auto">
+        {/* Sample Pads Section - Centered on all screen sizes */}
+        <div className="flex justify-center w-full mb-4">
+          <Card className="bg-zinc-800 border-zinc-700 w-full max-w-md">
+            <CardContent className="p-2 sm:p-4">
+              <div className="grid grid-cols-4 gap-1 sm:gap-2 mx-auto">
                   {samples.map((sample) => (
                     <SamplePad
                       key={sample.id}
@@ -972,42 +992,24 @@ export default function SamplePadApp() {
                       onPlay={() => playSoundSource(sample)}
                       onLoad={(file) => loadSample(file, sample.id)}
                       onRemove={() => removeSample(sample.id)}
-                      isActive={activeVisualizers.some(v => v.id === sample.id)}
+                      isActive={activePads.has(sample.id)}
                       isSelected={selectedSample === sample.id}
                       onSelect={() => setSelectedSample(sample.id)}
+                      onGenerateSound={(text, duration) => generateSound(text, duration, sample.id)}
                     />
                   ))}
                 </div>
               </CardContent>
             </Card>
-          </div>
-
-          {/* Visualizer Section */}
-          <div className="lg:col-span-2">
-            <Card className="bg-zinc-800 border-zinc-700 h-full">
-              <CardContent className="p-4 flex flex-col h-full">
-                <h2 className="text-xl font-bold mb-4 flex items-center">
-                  <Music className="mr-2 h-5 w-5" />
-                  Visualizer
-                </h2>
-                <div className="flex-1 bg-zinc-900 rounded-lg overflow-hidden">
-                  <Visualizer
-                    analyserNode={analyserNode.current}
-                    activeVisualizers={activeVisualizers}
-                  />
-                </div>
-              </CardContent>
-            </Card>
-          </div>
         </div>
 
         {/* Settings and Loop Recorder Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+        <div className="flex flex-col md:flex-row gap-4 justify-center">
           {/* Sample Settings */}
-          <Card className="bg-zinc-800 border-zinc-700">
+          <Card className="bg-zinc-800 border-zinc-700 w-full max-w-md">
             <CardContent className="p-3">
               <h2 className="text-lg font-semibold mb-2">Sample Settings</h2>
-              <div className="scale-90 origin-top-left">
+              <div className="origin-top-left">
                 <SampleSettings
                   sample={{
                     id: selectedSampleData?.id || 'default',
@@ -1032,8 +1034,8 @@ export default function SamplePadApp() {
           </Card>
 
           {/* Loop Recorder */}
-          <Card className="bg-zinc-800 border-zinc-700">
-            <CardContent className="p-4">
+          <Card className="bg-zinc-800 border-zinc-700 w-full max-w-md">
+            <CardContent className="p-2 sm:p-4">
               <LoopRecorder
                 isRecording={isRecording}
                 isPlaying={isPlaying}
@@ -1050,20 +1052,6 @@ export default function SamplePadApp() {
               />
             </CardContent>
           </Card>
-        </div>
-
-        {/* Effects Panel */}
-        <div className="mt-4">
-          <EffectsPanel
-            reverbAmount={effectsState.current.reverbAmount}
-            delayAmount={effectsState.current.delayAmount}
-            pitchShift={effectsState.current.pitchShift}
-            speed={effectsState.current.speed}
-            onReverbChange={(value) => updateEffects('reverb', value)}
-            onDelayChange={(value) => updateEffects('delay', value)}
-            onPitchChange={(value) => updateEffects('pitch', value)}
-            onSpeedChange={(value) => updateEffects('speed', value)}
-          />
         </div>
       </main>
     </div>

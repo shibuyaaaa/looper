@@ -907,7 +907,6 @@ export default function SamplePadApp() {
     <div className="flex flex-col min-h-screen bg-zinc-900 text-white">
       <header className="p-4 border-b border-zinc-700 flex justify-between items-center bg-zinc-900">
         <div className="flex items-center">
-          <Music className="h-6 w-6 mr-2" />
           <h1 className="text-xl font-bold">Looper</h1>
         </div>
         <div className="flex items-center space-x-2">
